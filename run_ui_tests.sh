@@ -103,23 +103,11 @@ launch_emulator() {
   echo "Emulator PID: ${emulator_pid}"
 }
 
-wait_for_emulator_boot() {
-  # Args: timeout_seconds
-  local timeout_seconds="${1:-60}"
-
-  echo "Waiting for emulator to boot..."
-
-  timeout timeout_seconds adb -s ${emulator_pid} wait-for-device || \
-   echo "Timeout booting emulator '${avd_name}' after ${timeout_seconds} seconds."
-
-  echo "Emulator booted!"
-}
-
-wait_for_emulator_functional() {
+wait_till_fully_booted() {
   # Args: timeout_seconds
   local timeout_seconds="${1:-60}"
   local end=$((SECONDS+timeout_seconds))
-  echo "Waiting for emulator '${avd_name}' to become functional..."
+  echo "Waiting for emulator '${avd_name}' to be fully booted..."
 
   until adb -e shell getprop sys.boot_completed | grep -qm1 1; do
     # Also fail if the emulator process died during boot
@@ -130,12 +118,12 @@ wait_for_emulator_functional() {
       exit 1
     fi
     (( SECONDS >= end )) && {
-      echo "Timeout waiting for emulator '${avd_name}' being functional after ${timeout_seconds} seconds."
+      echo "Timeout waiting for emulator '${avd_name}' to be fully booted."
       exit 1
     }
-    sleep 1
+    sleep 5
   done
-  echo "Emulator fully functional!"
+  echo "Emulator fully booted!"
 }
 
 set_show_touches() {
@@ -179,8 +167,7 @@ log_file="${log_dir}/${current_time}.log"
 echo "Logs: '${log_file}'."
 
 launch_emulator
-wait_for_emulator_boot 120
-wait_for_emulator_functional 60
+wait_till_fully_booted 60
 
 set_show_touches 1
 
