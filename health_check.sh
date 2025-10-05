@@ -9,8 +9,6 @@ Usage:
   ui_tests_health_check.sh [options]
 
 Options:
-  --avd <name>[,<name>...]     Verify one or more AVDs exist and look healthy.
-                               (May be repeated: --avd Emu_1 --avd Emu_2)
   --sdk-root <path>            Override ANDROID_HOME/ANDROID_SDK_ROOT autodetect.
   --java-vendor <regex>        Require Java vendor/distribution to match this regex
                                (e.g. "Corretto|Temurin|Zulu|Oracle").
@@ -27,7 +25,6 @@ USAGE
 }
 
 # ------------------------------ state ---------------------------------
-REQ_AVDS=""
 REQ_PLATFORM_APIS=""
 SDK_ROOT_OVERRIDE=""
 JAVA_VENDOR_RE=""
@@ -89,10 +86,6 @@ append_values() {
 # ---------------------------- arg parsing ------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
-    --avd)
-      [ $# -ge 2 ] || { say "Error: --avd requires a value"; usage; exit 2; }
-      append_values REQ_AVDS "$2"; shift 2;;
-    --avd=*)           append_values REQ_AVDS "${1#*=}"; shift;;
     --platform-api)
       [ $# -ge 2 ] || { say "Error: --platform-api requires a value"; usage; exit 2; }
       append_values REQ_PLATFORM_APIS "$2"; shift 2;;
@@ -305,42 +298,6 @@ check_licenses() {
   else warn "android-sdk-preview-license missing (OK unless using preview SDKs)."; fi
 }
 
-check_avds() {
-  [ -n "$REQ_AVDS" ] || return
-  emulator_bin="$SDK_ROOT/emulator/emulator"
-  PATH="$SDK_ROOT/emulator:$PATH"
-  listed="$(emulator -list-avds 2>/dev/null || true)"
-
-  for name in $REQ_AVDS; do
-    if printf "%s\n" "$listed" | grep -qx -- "$name"; then
-      ok "AVD '$name' exists."
-      avd_home="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
-      ini="$avd_home/$name.avd/config.ini"
-      if [ -f "$ini" ]; then
-        ok "AVD config found at $ini"
-        sysdir="$(grep '^image\.sysdir\.1=' "$ini" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
-        if [ -n "$sysdir" ]; then
-          case "$sysdir" in
-            sdk/*) warn "AVD '$name' has 'sdk/' prefix in image.sysdir.1 ('$sysdir'). Consider fixing to '${sysdir#sdk/}'." ;;
-          esac
-          if [ -d "$SDK_ROOT/$sysdir" ]; then
-            ok "AVD '$name' system image dir exists ($SDK_ROOT/$sysdir)"
-          else
-            fail "AVD '$name' system image dir not found: $SDK_ROOT/$sysdir"
-          fi
-        else
-          warn "AVD '$name' config lacks image.sysdir.1."
-        fi
-      else
-        warn "AVD '$name' config not found at $ini"
-      fi
-    else
-      avail="$(printf "%s" "$listed" | tr '\n' ' ' | sed 's/ $//')"
-      fail "AVD '$name' not found. Available: ${avail:-<none>}"
-    fi
-  done
-}
-
 # ------------------------------- main ---------------------------------
 main() {
   info "Starting Android UI tests health check…"
@@ -355,7 +312,6 @@ main() {
     check_build_tools
     check_platforms
     check_licenses
-    check_avds
   fi
 
   say ""
