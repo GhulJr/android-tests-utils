@@ -2,7 +2,7 @@
 # ui_tests_health_check.sh — POSIX shell (works in bash, zsh, dash)
 set -eu
 
-# ------------------------------- usage --------------------------------
+# ============================ usage ============================
 usage() {
   cat <<'USAGE'
 Usage:
@@ -24,7 +24,7 @@ Notes:
 USAGE
 }
 
-# ------------------------------ state ---------------------------------
+# ============================ state ============================
 REQ_PLATFORM_APIS=""
 SDK_ROOT_OVERRIDE=""
 JAVA_VENDOR_RE=""
@@ -34,25 +34,66 @@ MIN_BUILD_TOOLS=""
 ERRORS=""
 WARNINGS=""
 
-# ----------------------------- logging --------------------------------
+script_start=${SECONDS-0}
+
+# ============================ logging ============================
 is_tty=0; [ -t 1 ] && is_tty=1
-if [ "$is_tty" -eq 1 ]; then
-  c_bold="$(printf '\033[1m')"; c_red="$(printf '\033[31m')"
-  c_grn="$(printf '\033[32m')"; c_yel="$(printf '\033[33m')"
-  c_cyan="$(printf '\033[36m')"; c_rst="$(printf '\033[0m')"
+# Respect NO_COLOR if set
+if [ "$is_tty" -eq 1 ] && [ -z "${NO_COLOR-}" ]; then
+  c_bold="$(printf '\033[1m')"; c_dim="$(printf '\033[2m')"
+  c_red="$(printf '\033[31m')"; c_grn="$(printf '\033[32m')"
+  c_yel="$(printf '\033[33m')"; c_cyan="$(printf '\033[36m')"
+  c_rst="$(printf '\033[0m')"
 else
-  c_bold=""; c_red=""; c_grn=""; c_yel=""; c_cyan=""; c_rst=""
+  c_bold=""; c_dim=""; c_red=""; c_grn=""; c_yel=""; c_cyan=""; c_rst=""
 fi
 
+ts() { date +"%Y-%m-%d %H:%M:%S"; }
 say()  { printf "%s\n" "$*"; }
-info() { say "${c_cyan}INFO${c_rst}  $*"; }
-ok()   { say "${c_grn}OK${c_rst}    $*"; }
-warn() { WARNINGS="${WARNINGS}• $*\n"; say "${c_yel}WARN${c_rst}  $*"; }
-fail() { ERRORS="${ERRORS}• $*\n"; say "${c_red}FAIL${c_rst}  $*"; }
+log()  { printf "%s %s\n" "$(ts)" "$*"; }
+info() { log "${c_cyan}INFO${c_rst}  $*"; }
+ok()   { log "${c_grn}OK${c_rst}    $*"; }
+warn() { WARNINGS="${WARNINGS}• $*\n"; log "${c_yel}WARN${c_rst}  $*"; }
+fail() { ERRORS="${ERRORS}• $*\n";  log "${c_red}FAIL${c_rst}  $*"; }
+STEP() { printf "\n%s %s\n" "$(ts)" "${c_bold}── $* ─────────────────────────────────────────${c_rst}"; }
 
+# ============================ traps ============================
+on_sig() {
+  warn "Received termination signal. Exiting…"
+  # EXIT trap still runs
+  exit 130
+}
+on_exit() {
+  elapsed=$(( ${SECONDS-0} - ${script_start-0} ))
+  if [ -n "$ERRORS" ]; then
+    printf "\n%s\n" "${c_bold}Summary:${c_rst}"
+    printf "  ${c_red}%s${c_rst}\n" "REQUIRED checks failed:"
+    printf "    %b" "$ERRORS"
+    if [ -n "$WARNINGS" ]; then
+      printf "  ${c_yel}%s${c_rst}\n" "Warnings:"
+      printf "    %b" "$WARNINGS"
+    fi
+    printf "\n%s\n" "${c_red}Health check FAILED.${c_rst}"
+    info "Elapsed: ${elapsed}s"
+    # Don’t exit here; main controls exit code to avoid double-exit in some sh
+  else
+    printf "\n%s\n" "${c_bold}Summary:${c_rst}"
+    printf "  ${c_grn}%s${c_rst}\n" "All REQUIRED checks passed."
+    if [ -n "$WARNINGS" ]; then
+      printf "  ${c_yel}%s${c_rst}\n" "Warnings:"
+      printf "    %b" "$WARNINGS"
+    fi
+    printf "\n%s\n" "${c_grn}Health check PASSED.${c_rst}"
+    info "Elapsed: ${elapsed}s"
+  fi
+}
+trap on_exit EXIT
+trap on_sig INT TERM
+
+# ============================ helpers ============================
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-# semver compare: echo 1 if A>=B else 0
+# semver compare: echo 1 if A>=B else 0 (x[.y[.z]])
 semver_ge() {
   A="$1"; B="$2"
   a1=$(printf "%s" "$A" | awk -F. '{print $1+0}')
@@ -63,16 +104,12 @@ semver_ge() {
   b3=$(printf "%s" "$B" | awk -F. '{print ($3=="")?0:$3+0}')
   if [ "$a1" -gt "$b1" ] || { [ "$a1" -eq "$b1" ] && [ "$a2" -gt "$b2" ]; } || \
      { [ "$a1" -eq "$b1" ] && [ "$a2" -eq "$b2" ] && [ "$a3" -ge "$b3" ]; }; then
-    echo 1
-  else
-    echo 0
-  fi
+    echo 1; else echo 0; fi
 }
 
 # append CSV or single value(s) to a space-separated list var (by name)
 append_values() {
   varname="$1"; values="$2"
-  # turn commas into spaces, strip extra spaces
   vals=$(printf "%s" "$values" | tr ',' ' ' | tr -s ' ')
   # shellcheck disable=SC2086
   eval "current=\${$varname-}"
@@ -83,32 +120,39 @@ append_values() {
   fi
 }
 
-# ---------------------------- arg parsing ------------------------------
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --platform-api)
-      [ $# -ge 2 ] || { say "Error: --platform-api requires a value"; usage; exit 2; }
-      append_values REQ_PLATFORM_APIS "$2"; shift 2;;
-    --platform-api=*)  append_values REQ_PLATFORM_APIS "${1#*=}"; shift;;
-    --sdk-root)        [ $# -ge 2 ] || { say "Error: --sdk-root requires a value"; usage; exit 2; }
-                       SDK_ROOT_OVERRIDE="$2"; shift 2;;
-    --sdk-root=*)      SDK_ROOT_OVERRIDE="${1#*=}"; shift;;
-    --java-vendor)     [ $# -ge 2 ] || { say "Error: --java-vendor requires a value"; usage; exit 2; }
-                       JAVA_VENDOR_RE="$2"; shift 2;;
-    --java-vendor=*)   JAVA_VENDOR_RE="${1#*=}"; shift;;
-    --java-version)    [ $# -ge 2 ] || { say "Error: --java-version requires a value"; usage; exit 2; }
-                       JAVA_VERSION_EXACT="$2"; shift 2;;
-    --java-version=*)  JAVA_VERSION_EXACT="${1#*=}"; shift;;
-    --min-build-tools) [ $# -ge 2 ] || { say "Error: --min-build-tools requires a value"; usage; exit 2; }
-                       MIN_BUILD_TOOLS="$2"; shift 2;;
-    --min-build-tools=*) MIN_BUILD_TOOLS="${1#*=}"; shift;;
-    --help|-h)         usage; exit 0;;
-    --) shift; break;;
-    *)  say "Unknown option: $1"; usage; exit 2;;
-  esac
-done
+# ============================ arg parsing ============================
+parse_args() {
+  STEP "Parse arguments"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --platform-api)
+        [ $# -ge 2 ] || { say "Error: --platform-api requires a value"; usage; exit 2; }
+        append_values REQ_PLATFORM_APIS "$2"; shift 2;;
+      --platform-api=*)  append_values REQ_PLATFORM_APIS "${1#*=}"; shift;;
+      --sdk-root)
+        [ $# -ge 2 ] || { say "Error: --sdk-root requires a value"; usage; exit 2; }
+        SDK_ROOT_OVERRIDE="$2"; shift 2;;
+      --sdk-root=*)      SDK_ROOT_OVERRIDE="${1#*=}"; shift;;
+      --java-vendor)
+        [ $# -ge 2 ] || { say "Error: --java-vendor requires a value"; usage; exit 2; }
+        JAVA_VENDOR_RE="$2"; shift 2;;
+      --java-vendor=*)   JAVA_VENDOR_RE="${1#*=}"; shift;;
+      --java-version)
+        [ $# -ge 2 ] || { say "Error: --java-version requires a value"; usage; exit 2; }
+        JAVA_VERSION_EXACT="$2"; shift 2;;
+      --java-version=*)  JAVA_VERSION_EXACT="${1#*=}"; shift;;
+      --min-build-tools)
+        [ $# -ge 2 ] || { say "Error: --min-build-tools requires a value"; usage; exit 2; }
+        MIN_BUILD_TOOLS="$2"; shift 2;;
+      --min-build-tools=*) MIN_BUILD_TOOLS="${1#*=}"; shift;;
+      --help|-h)         usage; exit 0;;
+      --) shift; break;;
+      *)  say "Unknown option: $1"; usage; exit 2;;
+    esac
+  done
+}
 
-# --------------------------- helpers/checks ----------------------------
+# ========================= checks/implementations =========================
 detect_sdk_root() {
   if [ -n "$SDK_ROOT_OVERRIDE" ]; then printf "%s" "$SDK_ROOT_OVERRIDE"; return; fi
   if [ -n "${ANDROID_SDK_ROOT-}" ]; then printf "%s" "$ANDROID_SDK_ROOT"; return; fi
@@ -146,6 +190,7 @@ detect_java_details() {
 }
 
 check_java() {
+  STEP "Java"
   details="$(detect_java_details)"
   fullv="$(printf "%s" "$details" | cut -d'|' -f1)"
   vend="$(printf "%s" "$details" | cut -d'|' -f2)"
@@ -157,7 +202,6 @@ check_java() {
   fi
 
   if [ -n "$JAVA_VENDOR_RE" ]; then
-    # Use grep -E on a combined string of vendor + banner
     if ! printf "%s\n" "$vend $banner_esc" | grep -Ei -- "$JAVA_VENDOR_RE" >/dev/null 2>&1; then
       fail "Java vendor mismatch. Wanted /$JAVA_VENDOR_RE/, got '$vend'."
     else
@@ -179,6 +223,7 @@ check_java() {
 }
 
 check_gradle_wrapper() {
+  STEP "Gradle"
   if [ -x "./gradlew" ]; then
     ok "Gradle wrapper present (./gradlew)."
   elif have_cmd gradle; then
@@ -189,6 +234,7 @@ check_gradle_wrapper() {
 }
 
 check_sdk_root() {
+  STEP "Android SDK root"
   SDK_ROOT="$(detect_sdk_root)"
   if [ -z "${SDK_ROOT:-}" ]; then
     fail "Android SDK root not found. Set ANDROID_SDK_ROOT or ANDROID_HOME, or pass --sdk-root."
@@ -202,10 +248,10 @@ check_sdk_root() {
 }
 
 check_tools_presence() {
+  STEP "SDK tools presence"
   adb_bin="$SDK_ROOT/platform-tools/adb"
   emulator_bin="$SDK_ROOT/emulator/emulator"
 
-  # sdkmanager/avdmanager may be in PATH or in cmdline-tools/*/bin
   sdkmanager_bin="$(command -v sdkmanager 2>/dev/null || true)"
   avdmanager_bin="$(command -v avdmanager 2>/dev/null || true)"
   if [ -z "$sdkmanager_bin" ] || [ -z "$avdmanager_bin" ]; then
@@ -225,6 +271,7 @@ check_tools_presence() {
 }
 
 check_platform_tools_version() {
+  STEP "platform-tools version"
   vfile="$SDK_ROOT/platform-tools/source.properties"
   if [ -f "$vfile" ]; then
     ver="$(grep '^Pkg.Revision=' "$vfile" 2>/dev/null | cut -d= -f2 || true)"
@@ -234,7 +281,6 @@ check_platform_tools_version() {
   fi
 }
 
-# find latest build-tools by comparing versions ourselves (POSIX-safe)
 latest_build_tools_version() {
   dir="$SDK_ROOT/build-tools"
   best=""
@@ -249,6 +295,7 @@ latest_build_tools_version() {
 }
 
 check_build_tools() {
+  STEP "Build-Tools"
   dir="$SDK_ROOT/build-tools"
   if [ ! -d "$dir" ]; then fail "No Build-Tools installed under $dir."; return; fi
   latest="$(latest_build_tools_version)"
@@ -263,6 +310,7 @@ check_build_tools() {
 }
 
 check_platforms() {
+  STEP "Android platforms"
   dir="$SDK_ROOT/platforms"
   if [ ! -d "$dir" ]; then fail "No Android platforms installed under $dir."; return; fi
   installed_apis="$(ls -1 "$dir" 2>/dev/null | sed -n 's/^android-\([0-9][0-9]*\)$/\1/p' | sort -n || true)"
@@ -272,7 +320,6 @@ check_platforms() {
   fi
   ok "Installed Android APIs: $(printf "%s" "$installed_apis" | tr '\n' ' ' | sed 's/ $//')"
 
-  # verify required ones
   for api in $REQ_PLATFORM_APIS; do
     if printf "%s\n" "$installed_apis" | grep -qx "$api"; then
       ok "Required platform API $api is installed."
@@ -283,6 +330,7 @@ check_platforms() {
 }
 
 check_licenses() {
+  STEP "SDK licenses"
   licdir="$SDK_ROOT/licenses"
   if [ ! -d "$licdir" ]; then
     fail "SDK licenses directory missing ($licdir). Run: yes | sdkmanager --licenses"
@@ -298,8 +346,10 @@ check_licenses() {
   else warn "android-sdk-preview-license missing (OK unless using preview SDKs)."; fi
 }
 
-# ------------------------------- main ---------------------------------
+# ============================ main ============================
 main() {
+  parse_args "$@"
+
   info "Starting Android UI tests health check…"
 
   check_java
@@ -314,23 +364,11 @@ main() {
     check_licenses
   fi
 
-  say ""
-  say "${c_bold}Summary:${c_rst}"
+  # Exit code (EXIT trap prints summary)
   if [ -n "$ERRORS" ]; then
-    printf "  ${c_red}%s${c_rst}\n" "REQUIRED checks failed:"
-    printf "    %b" "$ERRORS"
+    exit 1
   else
-    printf "  ${c_grn}%s${c_rst}\n" "All REQUIRED checks passed."
-  fi
-  if [ -n "$WARNINGS" ]; then
-    printf "  ${c_yel}%s${c_rst}\n" "Warnings:"
-    printf "    %b" "$WARNINGS"
-  fi
-  say ""
-  if [ -n "$ERRORS" ]; then
-    say "${c_red}Health check FAILED.${c_rst}"; exit 1
-  else
-    say "${c_grn}Health check PASSED.${c_rst}"
+    exit 0
   fi
 }
 
